@@ -2,10 +2,16 @@
 title: "Loan Me Money?"
 author: "Charles Westby"
 date: "12/10/2017"
-output: html_document
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    number_sections: yes
+    toc: yes
 ---
 
 #Synopsis
+If a person walks into a bank needing a loan, will he or she be approved? Certain criteria determine whether or not a person will be approved for a loan. This report explores the relationship between many common factors that determine whether or not a person will be approved for a bank loan. These factors include the applicant's income, co-signer income, credit history, education level and assets. It will also see which factors have the most impact on whether a loan will be approved or not. In the end, a machine learning model will be created that will predict whether a person will be approved for a loan or not, based on given factors. 
 
 #Exploratory Analysis
 ##Loading Data and Packages
@@ -15,6 +21,7 @@ library(tidyr)
 library(ggplot2)
 library(gridExtra)
 library(caret)
+library(caretEnsemble)
 library(VIM)
 
 data <- read.csv("train-file.csv")
@@ -43,6 +50,7 @@ table(data$Credit_History)
 ```
 
 When previewing this data, it shows that there are 614 records withs 13 different attributes. Some are factor variables and others are numeric or integers. The data also contains many missing values in its records. There are 13 missing values for Gender, 3 missing values for Married, 15 missing values for Dependents, 32 missing values for Self_Employed, 14 missing values for Loan_Amount_Term and 50 missing values for Credit_History. Of these records, 192 people were denied the loan and 422 were approved. 
+
 Upon preview it was determined that Credit_History should be converted to a factor variable. This entry has only 1's, 0's and a few missing values. The 0 represents those who have not met the necessary guidelines for Credit History and 1 represents those who have.  
 
 ##Manipulating Data
@@ -88,7 +96,8 @@ ggplot(data_sub, aes(x=CoapplicantIncome, y = LoanAmount, col = Loan_Status)) +
   geom_jitter(alpha = 0.7) +
   facet_grid(. ~ Credit_History) + 
   labs(title = "Loan Amount by Coapplicant Income and Credit History",
-       x = "Coapplicant Income", y = "Loan Amount (Thousands)")
+       x = "Coapplicant Income", y = "Loan Amount (Thousands)") +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
 
 ```{r echo=TRUE, warning=FALSE, message=FALSE}
@@ -119,9 +128,9 @@ ggplot(poor_credit, aes(x=ApplicantIncome, y = LoanAmount)) +
   labs(title = "Poor Credit but Approved", x= "Applicant Income",
        y= "Loan Amount (Thousands)")
 ```
-
-
+ 
 Here the Loan_Amount_Term and Credit_History variables are turned into factor variables. Also the Loan_ID variable was removed because each record has a unique value here. In addition, the missing values for the data were imputed using kNN or k-Nearest Neighbor imputation. This imputation replaces the missing data with a value similar to other comparable records. 
+
 When graphing the data, Credit History appears to be critical factor. In fact, after futher investigation, it is determined that there were only 8 out of 422 approvals for a loan, where the applicant's Credit History did not meet the guidelines. A deeper look at these 8 applicants shows that none were self-employed. Also most of these loans was less than $200,000. However one was for $600,000, but that applicant had an income of around $400,000. This analysis shows that Credit History is significant when deciding whether to approve or deny a loan.
 
 #Machine Learning Models
@@ -133,49 +142,70 @@ train <- data_sub[inTrain, ]
 test <- data_sub[-inTrain, ]
 ```
 
-##Random Forest Model
-###Building Model
-```{r echo=TRUE, warning=FALSE, message=FALSE}
-model_rf <- train(Loan_Status ~ ., train, 
-                  method = "ranger",
-                  preProcess = c("center", "scale"),
-                  tuneLength = 11, 
-                  weights = as.numeric(train$Credit_History),
-                  trControl = trainControl(method = "cv", 
-                                           number = 10))
-model_rf
+
+##Ensemble Model
+###Building Model List
+```{r echo=TRUE, warning=FALSE, message=FALSE, results='hide'}
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3, savePredictions = TRUE, classProbs = TRUE)
+
+algorithmList <- c('lda', 'C5.0', 'ranger', 'treebag', 'bagEarth', 'gbm', 'glmnet', 'glm')
+
+models <- caretList(Loan_Status ~ ., train, trControl = control, methodList = algorithmList)
 ```
 
-###Testing Model
+###Viewing Model
 ```{r echo=TRUE}
-predictions_rf <- predict(model_rf, test)
-confusionMatrix(predictions_rf, test$Loan_Status)
+results <- resamples(models)
+summary(results)
 ```
 
-##Treebag Model
-###Building Model
+###Creating Ensemble
+####C5.0 Ensemble
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+stack_C5 <- caretStack(models, method = "C5.0", trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3, savePredictions = TRUE))
+stack_C5
+```
+
+####Testing Model
+```{r echo=TRUE}
+predictions_C5 <- predict(stack_C5, test)
+confusionMatrix(predictions_C5, test$Loan_Status)
+```
+
+####GLMNET Ensemble
 ```{r echo=TRUE, message=FALSE, warning=FALSE}
-model_bag <- train(Loan_Status ~ ., train, 
-                  method = "treebag",
-                  preProcess = c("center", "scale"),
-                  tuneLength = 11, 
-                  weights = as.numeric(train$Credit_History),
-                  trControl = trainControl(method = "cv", 
-                                           number = 10))
-model_bag
+stack_glmnet <- caretStack(models, method = "glmnet", trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3, savePredictions = TRUE))
+stack_glmnet
 ```
 
 ###Testing Model
 ```{r echo=TRUE, warning=FALSE, message=FALSE}
-predictions_bag <- predict(model_bag, test)
+predictions_glmnet <- predict(stack_glmnet, test)
+confusionMatrix(predictions_glmnet, test$Loan_Status)
+```
+
+####Bag Ensemble
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+stack_bag <- caretStack(models, method = "bagEarth", trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3, savePredictions = TRUE))
+stack_bag
+```
+
+###Testing Model
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+predictions_bag <- predict(stack_bag, test)
 confusionMatrix(predictions_bag, test$Loan_Status)
 ```
 
 #Conclusion
 When building these models the train and the test sets were created using a 70/30 split of the original data. 70% of the data was randomly selected for the train set and the rest was selected for the test set. 
-Next, the Random Forest Model was created using the `ranger` method in Caret. It ws preprocessed using centering and scaling. The tuneLength was adjusted to fit the number of predictors in the model. This adjustment lets the model test more models within, hopefully finding a more accurate model. Weight was added to the Credit_History variable, since this factor was one of the most important when determining Loan_Status. Finally, the model used ten-fold cross validation for resampling. 
-After creating this model, the Treebag Model was created. This model was also preprocessed using centering and scaling. The tuneLength was adjusted to 11 too. Once again weight was added to the Credit History variable. And it also used ten-fold cross validation. 
-When looking at both models, the Random Forest Model appears to perform better than the Treebag Model. The Random Forest Model picked a model that was about 79.33% accurate when tested internally. When this model was tested on the test set, it produced an accuracy that was 80.33% accurate. The Sensitivity or True Positive Rate was 49.12% and the Specificity or True Negative Rate was 94.44%. So this model was more accurate at picking those who would be approved for the loan, than it was at picking those who would be denied. The Treebag Model picked a model that was 74.71% when tested internally. When this Treebag Model was tested on the test set it was 74.86% accurate. The Sensitivity was 45.61% and the Specificity was 92.06%. This model was also more accurate when picking those who would be approved for the loan. As previously stated, the Random Forest Model will be the one that is used for the submissions.
+
+Next, a list of machine learning models was created. After this list was created, a test was run that would test the accuracy of each model. Many of the models performed well. The models that performed the best were the bagEarth, random forest, glmnet and gbm models. These models each had a mean accuracy of 79.57%. Any of these models would be good for making predictions, however, an ensemble model should perform better than any other model alone. 
+
+So, the next step was to use a few different algorithms to compile these models. The first method was a C5.0 ensemble. The second method was a GLMNET ensemble. The final method was a bagEarth ensemble. 
+
+When tested the C5.0 model predicted with 83.61% accuracy. The Sensitivity or True Positive Rate was 47.37% and the Specificity or True Negative Rate was 100%. Unfortunately, these rates are backwards in the model. The model was excellent when picking a person to be approved for the loan. The model was not as good when picking when a person would be rejected. The GLMNET model performed the exact way the C5.0 model performed.
+
+However, the bagEarth model performed differently. The bagEarth model performed with an accuracy of 84.15%. This model was slightly better at picking when a person would be rejected for the loan. However, this model's True Positive Rate only increased to 49.12%. Since the bagEarth model performed the best, it will be the model that is used for the submissions.
 
 #Submitting Results
 ```{r echo=TRUE}
@@ -184,16 +214,15 @@ final_test$Credit_History <- factor(final_test$Credit_History, labels = c("No", 
 final_test <- kNN(final_test)
 
 #Removing Variables Created by Imputation
-final_test <- final_test %>%
-  select(-(Loan_ID_imp:Property_Area_imp))
+final_test <- final_test[, 1:12]
 
-predictions_rf <- predict(model_rf, final_test)
-final_test$Loan_Status <- predictions_rf 
+predictions_bag <- predict(stack_bag, final_test)
+final_test$Loan_Status <- predictions_bag 
 
 
 dim(final_test)
 
-submission_rf <- final_test[, c("Loan_ID", "Loan_Status")]
-write.csv(submission_rf, "loan_rf_predictions.csv", row.names = FALSE)
+submission_bag <- final_test[, c("Loan_ID", "Loan_Status")]
+write.csv(submission_bag, "loan_rf_predictions.csv", row.names = FALSE)
 
 ```
